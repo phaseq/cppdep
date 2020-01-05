@@ -1,5 +1,9 @@
 package main
 
+// Extract dependency information from a c++ project
+//
+// Projects are tagged by putting a file called "CMakeLists.txt" into their root
+
 import (
 	"bufio"
 	"flag"
@@ -36,7 +40,7 @@ func main() {
 	project := read_files(*root_dir, flags)
 	project.assign_files_to_components()
 	project.generate_file_deps(flags)
-	project.dbg_components(flags)
+	project.print_components(flags)
 	//project.dbg_files()
 }
 
@@ -49,7 +53,7 @@ type file struct {
 	outgoing_links []*file
 }
 
-func (f *file) dbg() {
+func (f *file) print() {
 	fmt.Printf("%s\n", f.path)
 	fmt.Printf("  Component: %s\n", f.component.nice_name())
 
@@ -119,7 +123,7 @@ func (c *component) linked_components() ([]dependency, []dependency) {
 	return in, out
 }
 
-func (c *component) dbg(flags log_flags) {
+func (c *component) print(flags log_flags) {
 	fmt.Printf("%s (%d)\n", c.nice_name(), len(c.files))
 
 	in, out := c.linked_components()
@@ -167,8 +171,7 @@ func (p *project) rel_path(path string) string {
 	return rel_path
 }
 
-func (p *project) dbg_components(flags log_flags) {
-	fmt.Println("Components:")
+func (p *project) print_components(flags log_flags) {
 	for _, c := range p.components {
 		should_print := len(flags.components) == 0
 		for _, name := range flags.components {
@@ -178,23 +181,27 @@ func (p *project) dbg_components(flags log_flags) {
 			}
 		}
 		if should_print {
-			c.dbg(flags)
+			c.print(flags)
 		}
 	}
 }
 
-func (p *project) dbg_files() {
-	fmt.Println("Files:")
+func (p *project) print_files() {
 	for _, f := range p.files {
-		f.dbg()
+		f.print()
 	}
 }
 
 func (p *project) assign_files_to_components() {
 	for i_file, file := range p.files {
+		// Iterate over prefixes of file path, to find the most specific component.
+		// Assign to the most specific component.
+		// Example: file path: "a/b/header.hpp"
+		// candidate 1: a/b
+		// candidate 2: a
+		// candidate 3: ''
 		idx := 0
 		path := file.path
-		debug := strings.Contains(path, "ToolsDummy/Visualizer.hpp")
 		for idx != -1 {
 			idx = strings.LastIndex(path, "/")
 			if idx != -1 {
@@ -202,14 +209,8 @@ func (p *project) assign_files_to_components() {
 			} else {
 				path = ""
 			}
-			if debug {
-				fmt.Printf("-> %s\n", path)
-			}
 			for i_c, c := range p.components {
 				if c.path == path {
-					if debug {
-						fmt.Println("matched")
-					}
 					p.components[i_c].files = append(c.files, &p.files[i_file])
 					p.files[i_file].component = &p.components[i_c]
 					idx = -1
@@ -221,6 +222,9 @@ func (p *project) assign_files_to_components() {
 }
 
 func (p *project) generate_file_deps(flags log_flags) {
+	// map from possible include paths to corresponding files
+	// for example: "a/b/header.h" could be included as "header.h", "b/header.h", and "a/b/header.h"
+	// assumption here: normalized paths with unix slashes
 	path_to_files := make(map[string][]*file)
 	for i_file, file := range p.files {
 		path := file.path
@@ -230,10 +234,13 @@ func (p *project) generate_file_deps(flags log_flags) {
 			path_to_files[path] = append(path_to_files[path], &p.files[i_file])
 		}
 	}
+
 	for i_file, file := range p.files {
 		for _, include := range file.include_paths {
 			deps, present := path_to_files[include]
 			if present {
+				// If a file can be included from the current solution, assume that it is.
+				// This avoids adding dependencies to headers with name clashes (like StdAfx.h).
 				is_present_in_this_component := false
 				for _, dep := range deps {
 					if dep.component == file.component {
@@ -258,7 +265,7 @@ func (p *project) generate_file_deps(flags log_flags) {
 }
 
 func read_files(root_path string, flags log_flags) project {
-	source_suffixes := []string{".cpp", ".hpp", ".h"}
+	source_suffixes := []string{".cpp", ".hpp", ".c", ".h"}
 	ignore_patterns := []string{".svn", "dev/tools"}
 
 	root_path = strings.TrimSuffix(root_path, "/")
@@ -311,14 +318,14 @@ func extract_includes(path string, flags log_flags) []string {
 			iEnd := strings.LastIndexAny(line, "\">")
 			if iStart == -1 || iEnd == -1 || iStart >= iEnd {
 				if flags.warn_malformed {
-					fmt.Printf("Malformed #include in %s: %s\n", path, line)
+					fmt.Printf("malformed #include in %s: %s\n", path, line)
 				}
 				continue
 			}
 			include_path := line[(iStart + 1):iEnd]
 			if strings.Contains(include_path, "\\") || strings.Contains(include_path, "..") {
 				if flags.warn_malformed {
-					fmt.Printf("Malformed #include in %s: %s\n", path, include_path)
+					fmt.Printf("malformed #include in %s: %s\n", path, include_path)
 				}
 				continue
 			}
